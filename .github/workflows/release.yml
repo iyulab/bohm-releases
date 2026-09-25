@@ -1,0 +1,123 @@
+# Builds, signs and (optionally) drafts a Bohm release. Run by hand only.
+#
+# Signing uses iyulab/code-sign (Azure Key Vault, OIDC). The federated credential's subject is this
+# repository's immutable form — read it with
+#   gh api repos/iyulab/bohm-releases/actions/oidc/customization/sub   (sub_claim_prefix)
+# and append ":environment:production".
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to build
+        default: main
+      draft-release:
+        description: Create a draft GitHub Release from the signed installer
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    environment: production        # the OIDC federated credential requires this environment
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: iyulab/bohm-works
+          ref: ${{ inputs.ref }}
+          path: src
+          submodules: recursive
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # Third-party notices are generated during the build and double as a license gate.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src/bohm-browser/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content src/bohm-browser/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # 1) Build the runtime and the desktop program, then sign the binaries that go into the installer.
+      - id: build
+        shell: pwsh
+        run: ./src/scripts/package.ps1 -Phase build
+      - uses: iyulab/code-sign@693f7261b2e4aef517ff8972db7d07eb53ffc623
+        with:
+          files: ${{ steps.build.outputs.files }}
+
+      # 2) Build the installer from the signed binaries and sign it.
+      # Known gap: the uninstaller embedded in the installer is not signed yet — the bundler can only sign
+      # it mid-bundle, and the signing action signs files that already exist.
+      - id: bundle
+        shell: pwsh
+        run: ./src/scripts/package.ps1 -Phase bundle
+      - uses: iyulab/code-sign@693f7261b2e4aef517ff8972db7d07eb53ffc623
+        with:
+          files: ${{ steps.bundle.outputs.files }}
+
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          $files = @"
+          ${{ steps.build.outputs.files }}
+          ${{ steps.bundle.outputs.files }}
+          "@ -split "`n" | ForEach-Object Trim | Where-Object { $_ }
+          $bad = $files | Where-Object { (Get-AuthenticodeSignature $_).Status -ne 'Valid' }
+          if ($bad) { throw "Missing or invalid signature: $($bad -join ', ')" }
+          Write-Host "Signatures valid: $($files.Count) files"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bohm-setup
+          path: ${{ steps.bundle.outputs.files }}
+          retention-days: 1
+
+  draft-release:
+    if: ${{ inputs.draft-release }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bohm-setup
+          path: dist
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
+            --title "Bohm $VERSION" --notes "Bohm $VERSION for Windows (x64)."
+      - uses: geekyeggo/delete-artifact@v6
+        with:
+          name: bohm-setup
