@@ -7,6 +7,11 @@ app on your PC, with its data kept on your PC. It works without an internet conn
 
 [Latest release](https://github.com/iyulab/bohm-releases/releases/latest) — `Bohm_<version>_x64-setup.exe`
 
+## Making an app for Bohm
+
+Making an app with an AI chat? Paste [this text](https://bohmbrowser.com/build) into the chat together with your
+request, and the app it makes runs in Bohm as it is.
+
 ## System requirements
 
 - Windows 10 or 11 (x64)
