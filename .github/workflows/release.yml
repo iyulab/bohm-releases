@@ -119,7 +119,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
+        # The same signed installer is attached a second time under a version-free name, so
+        # releases/latest/download/Bohm-x64-setup.exe always starts the newest download directly.
         run: |
+          cp "dist/Bohm_${VERSION}_x64-setup.exe" dist/Bohm-x64-setup.exe
           gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
             --title "Bohm $VERSION" --notes "Bohm $VERSION for Windows (x64)."
       - uses: geekyeggo/delete-artifact@v6

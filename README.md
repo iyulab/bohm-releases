@@ -5,7 +5,9 @@ app on your PC, with its data kept on your PC. It works without an internet conn
 
 ## Download
 
-[Latest release](https://github.com/iyulab/bohm-releases/releases/latest) — `Bohm_<version>_x64-setup.exe`
+[Download for Windows (x64)](https://github.com/iyulab/bohm-releases/releases/latest/download/Bohm-x64-setup.exe) — the
+newest installer. Every release also lists it by version as `Bohm_<version>_x64-setup.exe`
+([latest release](https://github.com/iyulab/bohm-releases/releases/latest)).
 
 ## Making an app for Bohm
 
