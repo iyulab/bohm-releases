@@ -1,7 +1,8 @@
 # Bohm — Downloads
 
-Bohm is a desktop browser for the small web apps you make with AI: add an HTML file, and it runs as an
-app on your PC, with its data kept on your PC. It works without an internet connection.
+Bohm is an AI web browser for Windows: ask about the tabs you have open, let the AI fill in and click with
+you deciding, and describe an app to have it made — it runs on your PC, with its data kept on your PC. It works
+well even on an internal network with no internet access.
 
 ## Download
 
