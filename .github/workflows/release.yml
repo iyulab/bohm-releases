@@ -5,9 +5,9 @@
 #   gh api repos/iyulab/bohm-releases/actions/oidc/customization/sub   (sub_claim_prefix)
 # and append ":environment:production".
 #
-# Only the two signing jobs hold the signing credential (environment production + id-token: write), and
-# they run nothing but first-party artifact actions and the signing action: no checkout, no toolchain, no
-# build scripts. Build and bundle run without it, so a compromised dependency or build step cannot reach
+# Only the two signing jobs hold the signing credential (environment production + id-token: write). Both
+# are iyulab/code-sign's reusable workflow (pinned to a commit), which runs nothing of this repository: no
+# toolchain, no build scripts. Build and bundle run without it, so a compromised dependency or build step cannot reach
 # the credential. A signing job signs only the files named in SIGN_BINARIES (or the one installer) and
 # fails on any other file in its input, so a build cannot hand it something else to sign.
 #
@@ -68,6 +68,7 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      sign-binaries: ${{ steps.version.outputs.sign-binaries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,6 +110,10 @@ jobs:
         run: |
           $v = (Get-Content src/bohm-browser/tauri.conf.json -Raw | ConvertFrom-Json).version
           "version=$v" >> $env:GITHUB_OUTPUT
+          # The signing workflow is called with `with:`, which cannot read `env` — hand it the list as an output.
+          "sign-binaries<<EOF" >> $env:GITHUB_OUTPUT
+          @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ }) >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
 
       - id: build
         shell: pwsh
@@ -164,53 +169,19 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 2) Sign the binaries that go into the installer. Holds the signing credential; runs nothing else.
+  # 2) Sign the binaries that go into the installer, in code-sign's reusable workflow: a job that holds the
+  #    signing credential and runs nothing of ours. It accepts the artifact only if it holds exactly these
+  #    files, then signs, verifies and uploads them as signed-binaries.
   sign-binaries:
     needs: build
-    runs-on: windows-latest        # Authenticode signing and its verification run on Windows
-    timeout-minutes: 20
-    environment: production        # the OIDC federated credential requires this environment
+    uses: iyulab/code-sign/.github/workflows/sign.yml@c4c68c25295ce0010a396d54cdb017fd248c5cce
     permissions:
       id-token: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: unsigned-binaries
-          path: bin
-
-      - id: files
-        name: Accept exactly the files this workflow signs
-        shell: pwsh
-        run: |
-          $root = (Resolve-Path bin).Path
-          $expected = @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ }) | Sort-Object
-          $present = Get-ChildItem $root -Recurse -File | ForEach-Object { [IO.Path]::GetRelativePath($root, $_.FullName).Replace('\', '/') } | Sort-Object
-          $diff = Compare-Object $expected $present
-          if ($diff) { throw "The input is not exactly SIGN_BINARIES:`n$($diff | Out-String)" }
-          "files<<EOF" >> $env:GITHUB_OUTPUT
-          $expected | ForEach-Object { Join-Path $root $_ } >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-      - uses: iyulab/code-sign@693f7261b2e4aef517ff8972db7d07eb53ffc623
-        with:
-          files: ${{ steps.files.outputs.files }}
-
-      - name: Verify signatures
-        shell: pwsh
-        env:
-          FILES: ${{ steps.files.outputs.files }}
-        run: |
-          $files = @($env:FILES -split "`n" | ForEach-Object Trim | Where-Object { $_ })
-          $bad = $files | Where-Object { (Get-AuthenticodeSignature $_).Status -ne 'Valid' }
-          if ($bad) { throw "Missing or invalid signature: $($bad -join ', ')" }
-          Write-Host "Signatures valid: $($files.Count) files"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: signed-binaries
-          path: bin
-          if-no-files-found: error
-          retention-days: 1
+      contents: read
+    with:
+      artifact: unsigned-binaries
+      files: ${{ needs.build.outputs.sign-binaries }}
+      signed-artifact: signed-binaries
 
   # 3) Build the installer from the signed binaries. No signing credential here.
   # Known gap: the uninstaller embedded in the installer is not signed — the bundler can sign it only
@@ -279,52 +250,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 4) Sign the installer. Holds the signing credential; runs nothing else.
+  # 4) Sign the installer: the same reusable workflow, on exactly the one installer.
   sign-installer:
     needs: [build, bundle]
-    runs-on: windows-latest        # Authenticode signing and its verification run on Windows
-    timeout-minutes: 20
-    environment: production
+    uses: iyulab/code-sign/.github/workflows/sign.yml@c4c68c25295ce0010a396d54cdb017fd248c5cce
     permissions:
       id-token: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: unsigned-installer
-          path: dist
-
-      - id: files
-        name: Accept exactly the installer
-        shell: pwsh
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          $present = @(Get-ChildItem dist -Recurse -File)
-          $name = "Bohm_${env:VERSION}_x64-setup.exe"
-          if ($present.Count -ne 1 -or $present[0].Name -ne $name -or $present[0].Directory.FullName -ne (Resolve-Path dist).Path) {
-            throw "The input is not exactly $name : $($present.FullName -join ', ')"
-          }
-          "file=$($present[0].FullName)" >> $env:GITHUB_OUTPUT
-
-      - uses: iyulab/code-sign@693f7261b2e4aef517ff8972db7d07eb53ffc623
-        with:
-          files: ${{ steps.files.outputs.file }}
-
-      - name: Verify signature
-        shell: pwsh
-        env:
-          FILE: ${{ steps.files.outputs.file }}
-        run: |
-          $status = (Get-AuthenticodeSignature $env:FILE).Status
-          if ($status -ne 'Valid') { throw "Installer signature: $status" }
-          Write-Host "Signature valid: $env:FILE"
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: bohm-setup
-          path: dist
-          if-no-files-found: error
-          retention-days: 1
+      contents: read
+    with:
+      artifact: unsigned-installer
+      files: Bohm_${{ needs.build.outputs.version }}_x64-setup.exe
+      signed-artifact: bohm-setup
 
   draft-release:
     if: ${{ inputs.draft-release }}
