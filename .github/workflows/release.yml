@@ -5,13 +5,13 @@
 #   gh api repos/iyulab/bohm-releases/actions/oidc/customization/sub   (sub_claim_prefix)
 # and append ":environment:production".
 #
-# Only the two signing jobs hold the signing credential (environment production + id-token: write). Both
-# are iyulab/code-sign's reusable workflow (pinned to a commit), which runs nothing of this repository: no
-# toolchain, no build scripts. Build and bundle run without it, so a compromised dependency or build step cannot reach
-# the credential. A signing job signs only the files named in SIGN_BINARIES (or the one installer) and
-# fails on any other file in its input, so a build cannot hand it something else to sign.
+# The build runs here, without any credential. Everything after it is iyulab/tauri-release's reusable
+# Windows workflow (pinned to a commit): it signs exactly the files in SIGN_BINARIES, bundles twice so the
+# uninstaller and the NSIS plugins are signed too, signs the installer, installs it and checks every
+# installed file's signature, and drafts the release. Only its signing jobs hold the signing credential —
+# they are code-sign's reusable workflow, which runs nothing of this repository.
 #
-#   build (no credential) → sign-binaries → bundle (no credential) → sign-installer → draft-release
+#   build (no credential) → release: sign-binaries → bundle ×2 → sign-installer → verify → draft
 #
 # Every action is pinned to a commit; the tag it was taken from is in the trailing comment.
 name: release
@@ -123,8 +123,8 @@ jobs:
           BOHM_DIAGNOSTICS: ${{ secrets.BOHM_DIAGNOSTICS }}
         run: ./src/scripts/package.ps1 -Phase build
 
-      # Hand the signing job exactly the files to sign, and the bundle job what bundling reads: the shell
-      # sources (tracked files only), the built program, the staged runtime and licenses, and the script.
+      # Hand the signing job exactly the files to sign, and bundling what it reads: the shell sources
+      # (tracked files only), the built program, and the staged runtime and licenses.
       - name: Stage for signing and bundling
         shell: pwsh
         env:
@@ -146,7 +146,7 @@ jobs:
 
           $bundleIn = Join-Path $env:RUNNER_TEMP 'bundle-input'
           $shell = Join-Path $bundleIn 'bohm-browser'
-          New-Item -ItemType Directory -Force (Join-Path $shell 'target/release'), (Join-Path $shell 'target/stage'), (Join-Path $bundleIn 'scripts') | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $shell 'target/release'), (Join-Path $shell 'target/stage') | Out-Null
           $tar = Join-Path $env:RUNNER_TEMP 'shell.tar'
           git -C src/bohm-browser archive --format=tar -o $tar HEAD
           if ($LASTEXITCODE -ne 0) { throw 'git archive failed' }
@@ -154,7 +154,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'tar failed' }
           Copy-Item src/bohm-browser/target/release/bohm-browser.exe (Join-Path $shell 'target/release')
           Copy-Item src/bohm-browser/target/stage/runtime, src/bohm-browser/target/stage/licenses (Join-Path $shell 'target/stage') -Recurse
-          Copy-Item src/scripts/package.ps1 (Join-Path $bundleIn 'scripts')
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -169,129 +168,44 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 2) Sign the binaries that go into the installer, in code-sign's reusable workflow: a job that holds the
-  #    signing credential and runs nothing of ours. It accepts the artifact only if it holds exactly these
-  #    files, then signs, verifies and uploads them as signed-binaries.
-  sign-binaries:
+  # 2) Sign, bundle, check and draft — tauri-release, with signing in code-sign's jobs only.
+  release:
     needs: build
-    uses: iyulab/code-sign/.github/workflows/sign.yml@c4c68c25295ce0010a396d54cdb017fd248c5cce
+    uses: iyulab/tauri-release/.github/workflows/windows.yml@4b61269f46de71d8dbdc893da8b47968c9c9f35b
     permissions:
-      id-token: write
-      contents: read
+      id-token: write      # its three signing jobs
+      contents: write      # its draft job, only with draft-release
     with:
-      artifact: unsigned-binaries
+      unsigned-artifact: unsigned-binaries
       files: ${{ needs.build.outputs.sign-binaries }}
-      signed-artifact: signed-binaries
+      bundle-artifact: bundle-input
+      app-dir: bohm-browser
+      tauri-cli: '@tauri-apps/cli@2.12.1'   # the same as scripts/package.ps1
+      installer-artifact: bohm-setup
+      draft: ${{ inputs.draft-release }}
+      tag: v${{ needs.build.outputs.version }}
+      title: Bohm ${{ needs.build.outputs.version }}
+      notes: Bohm ${{ needs.build.outputs.version }} for Windows (x64).
+      # The same signed installer a second time under a version-free name, so
+      # releases/latest/download/Bohm-x64-setup.exe always starts the newest download directly.
+      alias: Bohm-x64-setup.exe
 
-  # 3) Build the installer from the signed binaries. No signing credential here.
-  # Known gap: the uninstaller embedded in the installer is not signed — the bundler can sign it only
-  # mid-bundle, which would bring the signing credential into this job.
-  bundle:
-    needs: [build, sign-binaries]
-    runs-on: windows-latest        # the installer is built with the Windows NSIS bundler
-    timeout-minutes: 30
+  # The installer keeps the name the site and the updater ask for.
+  installer-name:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: bundle-input
-          path: src
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: signed-binaries
-          path: signed
+      - env:
+          GOT: ${{ needs.release.outputs.installer }}
+          WANT: Bohm_${{ needs.build.outputs.version }}_x64-setup.exe
+        run: '[ "$GOT" = "$WANT" ] || { echo "installer is $GOT, expected $WANT" >&2; exit 1; }'
 
-      # The bundler reads the crate's metadata through cargo; nothing is compiled here.
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: stable
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-
-      - name: Put the signed binaries in place
-        shell: pwsh
-        run: |
-          foreach ($f in @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ })) {
-            Copy-Item (Join-Path signed $f) (Join-Path src $f) -Force
-          }
-
-      - id: bundle
-        shell: pwsh
-        run: ./src/scripts/package.ps1 -Phase bundle
-
-      # The installer must carry the signed binaries as they were signed — read them back out of it.
-      - name: Check the installer carries valid signatures
-        shell: pwsh
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          BUNDLED: ${{ steps.bundle.outputs.files }}
-        run: |
-          $setup = @($env:BUNDLED -split "`n" | ForEach-Object Trim | Where-Object { $_ })
-          if ($setup.Count -ne 1 -or (Split-Path $setup[0] -Leaf) -ne "Bohm_${env:VERSION}_x64-setup.exe") { throw "Unexpected bundle output: $($setup -join ', ')" }
-          $out = Join-Path $env:RUNNER_TEMP 'unpacked'
-          7z x -y "-o$out" $setup[0] | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw '7z failed' }
-          $inside = @($env:SIGN_BINARIES -split "`n" | ForEach-Object Trim | Where-Object { $_ }) | ForEach-Object {
-            $_ -replace '^bohm-browser/target/release/', '' -replace '^bohm-browser/target/stage/runtime/', 'runtime/'
-          }
-          $bad = $inside | Where-Object { $p = Join-Path $out $_; -not (Test-Path $p) -or (Get-AuthenticodeSignature $p).Status -ne 'Valid' }
-          if ($bad) { throw "Missing or invalid signature inside the installer: $($bad -join ', ')" }
-          Write-Host "Signatures valid inside the installer: $($inside.Count) files"
-          $stage = Join-Path $env:RUNNER_TEMP 'unsigned-installer'
-          New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item $setup[0] $stage
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: unsigned-installer
-          path: ${{ runner.temp }}/unsigned-installer
-          if-no-files-found: error
-          retention-days: 1
-
-  # 4) Sign the installer: the same reusable workflow, on exactly the one installer.
-  sign-installer:
-    needs: [build, bundle]
-    uses: iyulab/code-sign/.github/workflows/sign.yml@c4c68c25295ce0010a396d54cdb017fd248c5cce
-    permissions:
-      id-token: write
-      contents: read
-    with:
-      artifact: unsigned-installer
-      files: Bohm_${{ needs.build.outputs.version }}_x64-setup.exe
-      signed-artifact: bohm-setup
-
-  draft-release:
-    if: ${{ inputs.draft-release }}
-    needs: [build, sign-installer]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: bohm-setup
-          path: dist
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.build.outputs.version }}
-        # The same signed installer is attached a second time under a version-free name, so
-        # releases/latest/download/Bohm-x64-setup.exe always starts the newest download directly.
-        run: |
-          cp "dist/Bohm_${VERSION}_x64-setup.exe" dist/Bohm-x64-setup.exe
-          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --draft \
-            --title "Bohm $VERSION" --notes "Bohm $VERSION for Windows (x64)."
-      - uses: geekyeggo/delete-artifact@176a747ab7e287e3ff4787bf8a148716375ca118 # v6.0.0
-        with:
-          name: bohm-setup
-
-  # Intermediate artifacts are not kept past the run (the signed installer stays a day when no draft is made).
+  # This run's own artifacts are not kept past it (tauri-release removes its own).
   cleanup:
     if: ${{ always() }}
-    needs: [build, sign-binaries, bundle, sign-installer]
+    needs: [build, release]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -301,6 +215,4 @@ jobs:
           name: |
             unsigned-binaries
             bundle-input
-            signed-binaries
-            unsigned-installer
           failOnError: false
