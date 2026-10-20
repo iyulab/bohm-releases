@@ -1,9 +1,11 @@
 # Builds, signs and (optionally) drafts a Bohm release. Run by hand only.
 #
-# Signing uses iyulab/code-sign (Azure Key Vault, OIDC). The federated credential's subject is this
-# repository's immutable form — read it with
-#   gh api repos/iyulab/bohm-releases/actions/oidc/customization/sub   (sub_claim_prefix)
-# and append ":environment:production".
+# Signing uses iyulab/code-sign (Azure Key Vault, OIDC). This repository's OIDC subject includes the
+# calling workflow (`include_claim_keys`: repo · context · job_workflow_ref — read it with
+#   gh api repos/iyulab/bohm-releases/actions/oidc/customization/sub ), and the federated credential
+# matches only `<sub_claim_prefix>:environment:production:job_workflow_ref:iyulab/code-sign/*`: a
+# token is issued to a job run through code-sign's signing workflow, not to any job of this repository
+# that names the production environment.
 #
 # The build runs here, without any credential. Everything after it is iyulab/tauri-release's reusable
 # Windows workflow (pinned to a commit): it signs exactly the files in SIGN_BINARIES, bundles twice so the
