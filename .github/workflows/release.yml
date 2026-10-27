@@ -277,7 +277,7 @@ jobs:
   macos-sign:
     if: ${{ inputs.draft-release }}       # it attaches to the draft; without one there is nothing to attach to
     needs: [release, macos-build]
-    uses: iyulab/tauri-release/.github/workflows/macos-signed.yml@802dc2058d0e3d5d696e0cc856f3fa5c8e64f61f # unreleased
+    uses: iyulab/tauri-release/.github/workflows/macos-signed.yml@28f0a5f02fe3409e97b2d9f7faab923e2c25faab # unreleased
     permissions: {}
     secrets: inherit                      # RELEASE_BOT_PRIVATE_KEY (organization secret)
     with:
