@@ -259,9 +259,11 @@ jobs:
 
       - name: Stage for signing
         run: |
-          mkdir -p macos-input/entitlements
+          mkdir -p macos-input/entitlements/nested
           tar -cf macos-input/Bohm.app.tar -C src/bohm-browser/target/release/bundle/macos Bohm.app
-          cp src/bohm-browser/macos/*.entitlements macos-input/entitlements/
+          # The signing Mac's contract: main.entitlements for the bundle, nested/<executable name>.entitlements for a helper inside it.
+          cp src/bohm-browser/macos/Bohm.entitlements macos-input/entitlements/main.entitlements
+          cp src/bohm-browser/macos/runtime.entitlements macos-input/entitlements/nested/Bohm.Runtime.Host.entitlements
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
