@@ -15,6 +15,12 @@
 #
 #   build (no credential) → release: sign-binaries → bundle ×2 → sign-installer → verify → draft
 #
+# macOS (Apple silicon) goes the same way: the bundle is built here without any credential, ad hoc, and handed to
+# the organization's signing Mac, which signs it with a Developer ID, notarizes it and attaches the disk image and
+# the update archive to the draft the Windows call made (a private repository's workflow does it — see `macos-sign` below).
+#
+#   macos-build (no credential) → macos-sign: dispatch, wait → the draft holds the Windows installer and the macOS files
+#
 # Every action is pinned to a commit; the tag it was taken from is in the trailing comment.
 name: release
 
@@ -192,6 +198,89 @@ jobs:
       # releases/latest/download/Bohm-x64-setup.exe always starts the newest download directly.
       alias: Bohm-x64-setup.exe
 
+  # 3) The macOS bundle (ad hoc, no signing credential). Signing and notarizing are the signing Mac's.
+  macos-build:
+    runs-on: macos-latest          # the app bundle and its helpers are macOS (arm64) builds
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: iyulab/bohm-works
+          ref: ${{ inputs.ref }}
+          path: src
+          submodules: recursive
+          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false   # the token is needed only to fetch; later steps must not read it
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # Third-party notices are generated during the build and double as a license gate.
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-about
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src/bohm-browser/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content src/bohm-browser/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # No Apple credential is set, so the bundle is signed ad hoc (the build script says so) and the disk image it
+      # also makes is thrown away: only the bundle goes on, as a tar archive — an uploaded folder would lose the
+      # symbolic links and modes a bundle needs.
+      - id: build
+        shell: pwsh
+        env:
+          BOHM_DIAGNOSTICS: ${{ secrets.BOHM_DIAGNOSTICS }}
+        run: ./src/scripts/package.ps1
+
+      - name: Stage for signing
+        run: |
+          mkdir -p macos-input/entitlements
+          tar -cf macos-input/Bohm.app.tar -C src/bohm-browser/target/release/bundle/macos Bohm.app
+          cp src/bohm-browser/macos/*.entitlements macos-input/entitlements/
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-bundle
+          path: macos-input
+          if-no-files-found: error
+          retention-days: 1
+
+  # 4) Sign, notarize and attach — done by the organization's signing Mac (see the header). It needs the draft the
+  # Windows call made, so it runs after `release`. The pinned workflow only starts the signing and waits for it.
+  macos-sign:
+    if: ${{ inputs.draft-release }}       # it attaches to the draft; without one there is nothing to attach to
+    needs: [release, macos-build]
+    uses: iyulab/tauri-release/.github/workflows/macos-signed.yml@ff6a440080a62923492ba6605e4b3a6fd9820558 # unreleased
+    permissions: {}
+    secrets: inherit                      # RELEASE_BOT_PRIVATE_KEY (organization secret)
+    with:
+      version: ${{ needs.macos-build.outputs.version }}
+
   # The installer keeps the name the site and the updater ask for.
   installer-name:
     needs: [build, release]
@@ -207,7 +296,7 @@ jobs:
   # This run's own artifacts are not kept past it (tauri-release removes its own).
   cleanup:
     if: ${{ always() }}
-    needs: [build, release]
+    needs: [build, release, macos-build, macos-sign]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -217,4 +306,5 @@ jobs:
           name: |
             unsigned-binaries
             bundle-input
+            macos-bundle
           failOnError: false
