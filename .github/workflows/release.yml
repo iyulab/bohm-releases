@@ -43,6 +43,7 @@ env:
   SIGN_BINARIES: |
     bohm-browser/target/release/bohm-browser.exe
     bohm-browser/target/stage/runtime/Bohm.Runtime.Host.exe
+    bohm-browser/target/stage/runtime/modules/Bohm.Authoring.dll
     bohm-browser/target/stage/runtime/llama-server/ggml-base.dll
     bohm-browser/target/stage/runtime/llama-server/ggml-cpu-alderlake.dll
     bohm-browser/target/stage/runtime/llama-server/ggml-cpu-cannonlake.dll
