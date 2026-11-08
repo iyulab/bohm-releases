@@ -180,7 +180,7 @@ jobs:
   # 2) Sign, bundle, check and draft — tauri-release, with signing in code-sign's jobs only.
   release:
     needs: build
-    uses: iyulab/tauri-release/.github/workflows/windows.yml@b8cb5dd95167e46f7474e6d498c1dd422651ad22
+    uses: iyulab/tauri-release/.github/workflows/windows.yml@461d4df5fe41be5a78dc088d4a6e6d75b53e08af
     permissions:
       id-token: write      # its three signing jobs
       contents: write      # its draft job, only with draft-release
