@@ -60,6 +60,7 @@ env:
     bohm-browser/target/stage/runtime/llama-server/ggml-cpu-x64.dll
     bohm-browser/target/stage/runtime/llama-server/ggml-cpu-zen4.dll
     bohm-browser/target/stage/runtime/llama-server/ggml-rpc.dll
+    bohm-browser/target/stage/runtime/llama-server/ggml-vulkan.dll
     bohm-browser/target/stage/runtime/llama-server/ggml.dll
     bohm-browser/target/stage/runtime/llama-server/libomp.dll
     bohm-browser/target/stage/runtime/llama-server/llama-common.dll
